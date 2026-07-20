@@ -254,7 +254,7 @@ class ShiftMLPBlock(nn.Module):
     def _shift(self, x: torch.Tensor, dim: int) -> torch.Tensor:
         chunks = torch.chunk(x, self.shift_size, dim=1)
         shifts = range(-self.pad, self.pad + 1)
-        shifted = [torch.roll(ch, shift=s, dims=dim) for ch, s in zip(chunks, shifts)]
+        shifted = [torch.roll(ch, shifts=s, dims=dim) for ch, s in zip(chunks, shifts)]
         return torch.cat(shifted, dim=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
