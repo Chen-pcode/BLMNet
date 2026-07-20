@@ -38,7 +38,15 @@ def resolve_split(data_root: str | Path, dataset: str, split: str) -> DatasetSpl
         real_split = "val" if split == "test" else split
         return DatasetSplit("isic2018", real_split, base / real_split / "images", base / real_split / "masks")
     if key in {"ph2", "ph2dataset", "ph2dataset"}:
-        base = root / "PH2Dataset" / "ph2" / "test"
+        candidates = [
+            root / "PH2Dataset" / "ph2" / "test",
+            root / "ph2dataset" / "ph2" / "test",
+            root / "PH2" / "ph2" / "test",
+            root / "ph2" / "test",
+            root / "ph2dataset" / "test",
+            root / "PH2Dataset" / "test",
+        ]
+        base = next((p for p in candidates if (p / "images").exists() and (p / "masks").exists()), candidates[0])
         return DatasetSplit("PH2", "test", base / "images", base / "masks")
     raise ValueError(f"Unknown dataset: {dataset}")
 

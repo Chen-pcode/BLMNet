@@ -21,7 +21,15 @@ def resolve_split(data_root: str | Path, dataset: str, split: str) -> tuple[Path
         base = root / "isic2018" / real_split
         return base / "images", base / "masks"
     if key in {"ph2", "ph2dataset"}:
-        base = root / "PH2Dataset" / "ph2" / "test"
+        candidates = [
+            root / "PH2Dataset" / "ph2" / "test",
+            root / "ph2dataset" / "ph2" / "test",
+            root / "PH2" / "ph2" / "test",
+            root / "ph2" / "test",
+            root / "ph2dataset" / "test",
+            root / "PH2Dataset" / "test",
+        ]
+        base = next((p for p in candidates if (p / "images").exists() and (p / "masks").exists()), candidates[0])
         return base / "images", base / "masks"
     raise ValueError(f"Unknown dataset: {dataset}")
 
