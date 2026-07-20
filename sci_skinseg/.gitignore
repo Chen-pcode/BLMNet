@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+outputs/
+outputs_smoke/
+*.pt
+*.pth
+*.ckpt
+wandb/
+runs/
+data/
