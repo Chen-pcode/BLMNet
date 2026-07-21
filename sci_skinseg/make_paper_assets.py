@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 
-METRICS = ["dice", "iou", "accuracy", "hd95", "sensitivity", "specificity", "precision", "fps", "params", "flops"]
+METRICS = ["dice", "iou", "miou", "accuracy", "hd95", "sensitivity", "specificity", "precision", "fps", "params", "flops"]
 
 
 def _fmt_mean_std(mean: float, std: float, scale: float = 1.0, digits: int = 2) -> str:
@@ -28,7 +28,7 @@ def make_tables(df: pd.DataFrame, out: Path) -> None:
             row[metric] = _fmt_mean_std(
                 sub[metric].mean(),
                 sub[metric].std(),
-                scale=100.0 if metric in {"dice", "iou", "accuracy", "sensitivity", "specificity", "precision"} else 1.0,
+                scale=100.0 if metric in {"dice", "iou", "miou", "accuracy", "sensitivity", "specificity", "precision"} else 1.0,
             )
         row["params_m"] = _fmt_mean_std(sub["params"].mean() / 1e6, sub["params"].std() / 1e6 if len(sub) > 1 else 0.0)
         row["gflops"] = _fmt_mean_std(sub["flops"].mean() / 1e9, sub["flops"].std() / 1e9 if len(sub) > 1 else 0.0)

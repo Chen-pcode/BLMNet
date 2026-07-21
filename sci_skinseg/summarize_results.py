@@ -20,7 +20,7 @@ def main() -> None:
             raise SystemExit(f"No all_results.csv or summary.csv files found under {root}")
         df = pd.concat([pd.read_csv(f).assign(run=str(f.parent.relative_to(root))) for f in files], ignore_index=True)
         df.to_csv(all_results, index=False)
-    metric_cols = ["dice", "iou", "accuracy", "hd95", "sensitivity", "specificity", "precision", "fps", "params", "flops"]
+    metric_cols = ["dice", "iou", "miou", "accuracy", "hd95", "sensitivity", "specificity", "precision", "fps", "params", "flops"]
     group_cols = ["model", "train_dataset", "eval_dataset"]
     agg = df.groupby(group_cols)[metric_cols].agg(["mean", "std"]).reset_index()
     agg.columns = [

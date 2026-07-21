@@ -43,6 +43,8 @@ def binary_metrics(pred: np.ndarray, target: np.ndarray) -> dict[str, float]:
     tp, tn, fp, fn = confusion(pred, target)
     dice = (2 * tp + EPS) / (2 * tp + fp + fn + EPS)
     iou = (tp + EPS) / (tp + fp + fn + EPS)
+    bg_iou = (tn + EPS) / (tn + fp + fn + EPS)
+    miou = (iou + bg_iou) / 2.0
     acc = (tp + tn + EPS) / (tp + tn + fp + fn + EPS)
     sen = (tp + EPS) / (tp + fn + EPS)
     spe = (tn + EPS) / (tn + fp + EPS)
@@ -50,6 +52,7 @@ def binary_metrics(pred: np.ndarray, target: np.ndarray) -> dict[str, float]:
     return {
         "dice": float(dice),
         "iou": float(iou),
+        "miou": float(miou),
         "accuracy": float(acc),
         "sensitivity": float(sen),
         "specificity": float(spe),

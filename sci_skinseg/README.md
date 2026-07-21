@@ -15,7 +15,7 @@ The code supports:
 - cross-domain evaluation on ISIC2017, ISIC2018, and PH2
 - lightweight baselines (`malunet`, `lbunet`, `unext`, `egeunet`) and the proposed `blmnet`
 - ablations for boundary branch and selective-scan block
-- Dice, IoU, Accuracy, sensitivity, specificity, precision, F1, HD95
+- Dice, foreground IoU, mIoU, Accuracy, sensitivity, specificity, precision, F1, HD95
 - parameters, approximate FLOPs, model size, and FPS
 - CSV outputs ready for tables and paper writing
 

@@ -108,7 +108,7 @@ BLMNet 由三部分组成：
 
 ### 4.3 Evaluation Metrics
 
-区域指标：Dice、IoU。  
+区域指标：Dice、前景 IoU、mIoU。  
 分类指标：Accuracy、Sensitivity、Specificity、Precision。  
 边界指标：HD95。  
 效率指标：Params、FLOPs、FPS、model size。

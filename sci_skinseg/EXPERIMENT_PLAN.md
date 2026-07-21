@@ -28,7 +28,7 @@ accuracy-efficiency Pareto trade-off.
 
 ## Metrics
 
-- Region overlap: Dice, IoU.
+- Region overlap: Dice, foreground IoU, mIoU.
 - Pixel classification: Accuracy, sensitivity, specificity, precision.
 - Boundary quality: HD95.
 - Efficiency: Params, FLOPs, model size, FPS.
@@ -47,7 +47,7 @@ Models:
 
 Table columns:
 
-- Dice, IoU, Accuracy, HD95, sensitivity, specificity, Params, FLOPs, FPS
+- Dice, IoU, mIoU, Accuracy, HD95, sensitivity, specificity, Params, FLOPs, FPS
 
 Table 2: Same-domain comparison on ISIC2017.
 
