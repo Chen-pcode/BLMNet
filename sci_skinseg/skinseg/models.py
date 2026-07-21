@@ -17,12 +17,21 @@ def _groups(channels: int) -> int:
 
 
 class ConvBNAct(nn.Module):
-    def __init__(self, in_ch: int, out_ch: int, k: int = 3, s: int = 1, p: int | None = None, groups: int = 1):
+    def __init__(
+        self,
+        in_ch: int,
+        out_ch: int,
+        k: int = 3,
+        s: int = 1,
+        p: int | None = None,
+        groups: int = 1,
+        dilation: int = 1,
+    ):
         super().__init__()
         if p is None:
-            p = k // 2
+            p = dilation * (k // 2)
         self.block = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, k, s, p, groups=groups, bias=False),
+            nn.Conv2d(in_ch, out_ch, k, s, p, dilation=dilation, groups=groups, bias=False),
             nn.GroupNorm(_groups(out_ch), out_ch),
             nn.SiLU(inplace=True),
         )
@@ -35,7 +44,7 @@ class DSConv(nn.Module):
     def __init__(self, in_ch: int, out_ch: int, stride: int = 1, dilation: int = 1):
         super().__init__()
         self.block = nn.Sequential(
-            ConvBNAct(in_ch, in_ch, 3, stride, dilation, groups=in_ch),
+            ConvBNAct(in_ch, in_ch, 3, stride, dilation, groups=in_ch, dilation=dilation),
             ConvBNAct(in_ch, out_ch, 1, 1, 0),
         )
 
