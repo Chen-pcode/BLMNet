@@ -130,6 +130,31 @@ class GroupEnhanceBlock(nn.Module):
         return x + y * self.attn(y)
 
 
+class MultiScaleContextBlock(nn.Module):
+    def __init__(self, channels: int):
+        super().__init__()
+        branch_ch = channels // 4
+        self.reduce = ConvBNAct(channels, branch_ch * 4, 1, 1, 0)
+        self.b1 = DSConv(branch_ch, branch_ch, dilation=1)
+        self.b2 = DSConv(branch_ch, branch_ch, dilation=2)
+        self.b3 = DSConv(branch_ch, branch_ch, dilation=4)
+        self.b4 = SelectiveScan2D(branch_ch)
+        self.fuse = ConvBNAct(branch_ch * 4, channels, 1, 1, 0)
+        self.attn = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(channels, max(8, channels // 4), 1),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(max(8, channels // 4), channels, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        c1, c2, c3, c4 = torch.chunk(self.reduce(x), 4, dim=1)
+        y = torch.cat([self.b1(c1), self.b2(c2), self.b3(c3), self.b4(c4)], dim=1)
+        y = self.fuse(y)
+        return x + y * self.attn(y)
+
+
 class EGELite(nn.Module):
     def __init__(self, base: int = 16):
         super().__init__()
@@ -207,10 +232,10 @@ class BLMNet(nn.Module):
         self.use_boundary = use_boundary
         self.stem = ConvBNAct(3, base)
         self.e1 = ResDSBlock(base, base)
-        self.e2 = ResDSBlock(base, base * 2, 2)
-        self.e3 = ResDSBlock(base * 2, base * 4, 2)
-        self.e4 = ResDSBlock(base * 4, base * 8, 2)
-        self.context = SelectiveScan2D(base * 8) if use_scan else GroupEnhanceBlock(base * 8)
+        self.e2 = nn.Sequential(ResDSBlock(base, base * 2, 2), GroupEnhanceBlock(base * 2))
+        self.e3 = nn.Sequential(ResDSBlock(base * 2, base * 4, 2), GroupEnhanceBlock(base * 4))
+        self.e4 = nn.Sequential(ResDSBlock(base * 4, base * 8, 2), GroupEnhanceBlock(base * 8))
+        self.context = MultiScaleContextBlock(base * 8) if use_scan else GroupEnhanceBlock(base * 8)
         if use_boundary:
             self.f3 = BoundaryGuidedFusion(base * 8, base * 4, base * 4)
             self.f2 = BoundaryGuidedFusion(base * 4, base * 2, base * 2)
@@ -219,6 +244,8 @@ class BLMNet(nn.Module):
             self.f3 = ResDSBlock(base * 12, base * 4)
             self.f2 = ResDSBlock(base * 6, base * 2)
             self.f1 = ResDSBlock(base * 3, base)
+        self.aux3 = nn.Conv2d(base * 4, 1, 1)
+        self.aux2 = nn.Conv2d(base * 2, 1, 1)
         self.out = nn.Conv2d(base, 1, 1)
 
     def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor] | torch.Tensor:
@@ -234,11 +261,25 @@ class BLMNet(nn.Module):
             logits = self.out(d1)
             boundary = b1 + F.interpolate(b2, size=b1.shape[-2:], mode="bilinear", align_corners=False)
             boundary = boundary + F.interpolate(b3, size=b1.shape[-2:], mode="bilinear", align_corners=False)
-            return {"logits": logits, "boundary": boundary / 3.0}
+            return {
+                "logits": logits,
+                "boundary": boundary / 3.0,
+                "aux": [
+                    F.interpolate(self.aux3(d3), size=logits.shape[-2:], mode="bilinear", align_corners=False),
+                    F.interpolate(self.aux2(d2), size=logits.shape[-2:], mode="bilinear", align_corners=False),
+                ],
+            }
         d3 = self.f3(torch.cat([F.interpolate(e4, size=e3.shape[-2:], mode="bilinear", align_corners=False), e3], 1))
         d2 = self.f2(torch.cat([F.interpolate(d3, size=e2.shape[-2:], mode="bilinear", align_corners=False), e2], 1))
         d1 = self.f1(torch.cat([F.interpolate(d2, size=e1.shape[-2:], mode="bilinear", align_corners=False), e1], 1))
-        return self.out(d1)
+        logits = self.out(d1)
+        return {
+            "logits": logits,
+            "aux": [
+                F.interpolate(self.aux3(d3), size=logits.shape[-2:], mode="bilinear", align_corners=False),
+                F.interpolate(self.aux2(d2), size=logits.shape[-2:], mode="bilinear", align_corners=False),
+            ],
+        }
 
 
 class ShiftMLPBlock(nn.Module):

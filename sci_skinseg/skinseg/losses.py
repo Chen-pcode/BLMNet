@@ -27,7 +27,10 @@ def multitask_loss(outputs: dict[str, torch.Tensor] | torch.Tensor, target: torc
     if torch.is_tensor(outputs):
         return bce_dice_loss(outputs, target)
     seg = boundary_weighted_loss(outputs["logits"], target, boundary)
+    aux_loss = 0.0
+    for weight, aux in zip([0.25, 0.15], outputs.get("aux", [])):
+        aux_loss = aux_loss + weight * bce_dice_loss(aux, target)
     if "boundary" not in outputs:
-        return seg
+        return seg + aux_loss
     bnd = F.binary_cross_entropy_with_logits(outputs["boundary"], boundary)
-    return seg + 0.4 * bnd
+    return seg + aux_loss + 0.4 * bnd
