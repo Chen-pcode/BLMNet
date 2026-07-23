@@ -341,6 +341,146 @@ class UNeXtLite(nn.Module):
         return self.out(d1)
 
 
+class LinearAttention2D(nn.Module):
+    """MobileViTv2-style separable self-attention for 2D feature maps."""
+
+    def __init__(self, channels: int):
+        super().__init__()
+        self.qkv = nn.Conv2d(channels, channels * 3, 1, bias=False)
+        self.proj = ConvBNAct(channels, channels, 1, 1, 0)
+        self.scale = channels**-0.5
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        q, k, v = torch.chunk(self.qkv(x), 3, dim=1)
+        b, c, h, w = q.shape
+        q = q.flatten(2).transpose(1, 2)
+        k = k.flatten(2)
+        v = v.flatten(2).transpose(1, 2)
+        weights = torch.softmax(k * self.scale, dim=-1)
+        context = torch.bmm(weights, v)
+        y = torch.bmm(q, context).transpose(1, 2).reshape(b, c, h, w)
+        return x + self.proj(y)
+
+
+class MobileViTv2Block(nn.Module):
+    def __init__(self, channels: int):
+        super().__init__()
+        self.local = nn.Sequential(DSConv(channels, channels), ConvBNAct(channels, channels, 1, 1, 0))
+        self.attn = LinearAttention2D(channels)
+        self.fuse = ResDSBlock(channels * 2, channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        local = self.local(x)
+        global_ctx = self.attn(local)
+        return self.fuse(torch.cat([local, global_ctx], dim=1))
+
+
+class MobileViTv2Seg(nn.Module):
+    """Dependency-light MobileViTv2-style segmentation baseline."""
+
+    def __init__(self, base: int = 16):
+        super().__init__()
+        self.e1 = nn.Sequential(ConvBNAct(3, base), ResDSBlock(base, base))
+        self.e2 = nn.Sequential(ResDSBlock(base, base * 2, 2), MobileViTv2Block(base * 2))
+        self.e3 = nn.Sequential(ResDSBlock(base * 2, base * 4, 2), MobileViTv2Block(base * 4))
+        self.e4 = nn.Sequential(ResDSBlock(base * 4, base * 8, 2), MobileViTv2Block(base * 8))
+        self.d3 = ResDSBlock(base * 12, base * 4)
+        self.d2 = ResDSBlock(base * 6, base * 2)
+        self.d1 = ResDSBlock(base * 3, base)
+        self.out = nn.Conv2d(base, 1, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        e1 = self.e1(x)
+        e2 = self.e2(e1)
+        e3 = self.e3(e2)
+        e4 = self.e4(e3)
+        d3 = self.d3(torch.cat([F.interpolate(e4, size=e3.shape[-2:], mode="bilinear", align_corners=False), e3], 1))
+        d2 = self.d2(torch.cat([F.interpolate(d3, size=e2.shape[-2:], mode="bilinear", align_corners=False), e2], 1))
+        d1 = self.d1(torch.cat([F.interpolate(d2, size=e1.shape[-2:], mode="bilinear", align_corners=False), e1], 1))
+        return self.out(d1)
+
+
+class SoftExpertContext(nn.Module):
+    """Mamba Goes HoME-inspired lightweight mixture-of-experts context block."""
+
+    def __init__(self, channels: int, experts: int = 4):
+        super().__init__()
+        self.experts = nn.ModuleList(
+            [
+                DSConv(channels, channels, dilation=1),
+                DSConv(channels, channels, dilation=2),
+                DSConv(channels, channels, dilation=3),
+                SelectiveScan2D(channels),
+            ][:experts]
+        )
+        self.router = nn.Sequential(nn.AdaptiveAvgPool2d(1), nn.Conv2d(channels, len(self.experts), 1))
+        self.fuse = ConvBNAct(channels, channels, 1, 1, 0)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        weights = torch.softmax(self.router(x).flatten(1), dim=1)
+        ys = torch.stack([expert(x) for expert in self.experts], dim=1)
+        y = (ys * weights[:, :, None, None, None]).sum(dim=1)
+        return x + self.fuse(y)
+
+
+class MambaHoMESeg(nn.Module):
+    """2D skin-lesion baseline adapted from the HoME mixture-of-experts idea."""
+
+    def __init__(self, base: int = 16):
+        super().__init__()
+        self.stem = ConvBNAct(3, base)
+        self.e1 = ResDSBlock(base, base)
+        self.e2 = ResDSBlock(base, base * 2, 2)
+        self.e3 = ResDSBlock(base * 2, base * 4, 2)
+        self.e4 = ResDSBlock(base * 4, base * 8, 2)
+        self.context = SoftExpertContext(base * 8)
+        self.d3 = ResDSBlock(base * 12, base * 4)
+        self.d2 = ResDSBlock(base * 6, base * 2)
+        self.d1 = ResDSBlock(base * 3, base)
+        self.out = nn.Conv2d(base, 1, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.stem(x)
+        e1 = self.e1(x)
+        e2 = self.e2(e1)
+        e3 = self.e3(e2)
+        e4 = self.context(self.e4(e3))
+        d3 = self.d3(torch.cat([F.interpolate(e4, size=e3.shape[-2:], mode="bilinear", align_corners=False), e3], 1))
+        d2 = self.d2(torch.cat([F.interpolate(d3, size=e2.shape[-2:], mode="bilinear", align_corners=False), e2], 1))
+        d1 = self.d1(torch.cat([F.interpolate(d2, size=e1.shape[-2:], mode="bilinear", align_corners=False), e1], 1))
+        return self.out(d1)
+
+
+class LiteMambaBoundSeg(nn.Module):
+    """LiteMamba-Bound-style baseline without mamba_ssm or custom CUDA kernels."""
+
+    def __init__(self, base: int = 16):
+        super().__init__()
+        self.stem = ConvBNAct(3, base)
+        self.e1 = ResDSBlock(base, base)
+        self.e2 = nn.Sequential(ResDSBlock(base, base * 2, 2), SelectiveScan2D(base * 2))
+        self.e3 = nn.Sequential(ResDSBlock(base * 2, base * 4, 2), SelectiveScan2D(base * 4))
+        self.e4 = nn.Sequential(ResDSBlock(base * 4, base * 8, 2), MultiScaleContextBlock(base * 8))
+        self.f3 = BoundaryGuidedFusion(base * 8, base * 4, base * 4)
+        self.f2 = BoundaryGuidedFusion(base * 4, base * 2, base * 2)
+        self.f1 = BoundaryGuidedFusion(base * 2, base, base)
+        self.out = nn.Conv2d(base, 1, 1)
+
+    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+        x = self.stem(x)
+        e1 = self.e1(x)
+        e2 = self.e2(e1)
+        e3 = self.e3(e2)
+        e4 = self.e4(e3)
+        d3, b3 = self.f3(e4, e3)
+        d2, b2 = self.f2(d3, e2)
+        d1, b1 = self.f1(d2, e1)
+        logits = self.out(d1)
+        boundary = b1 + F.interpolate(b2, size=b1.shape[-2:], mode="bilinear", align_corners=False)
+        boundary = boundary + F.interpolate(b3, size=b1.shape[-2:], mode="bilinear", align_corners=False)
+        return {"logits": logits, "boundary": boundary / 3.0}
+
+
 class ProbabilityOutputWrapper(nn.Module):
     """Adapts external models that return probabilities or nested outputs to logits."""
 
@@ -410,6 +550,12 @@ def get_model(name: str) -> nn.Module:
         return _external_model(key)
     if key in {"unext", "unextlite", "unext-lite"}:
         return UNeXtLite(base=16)
+    if key in {"mobilevitv2", "mobilevit-v2", "mobilevit"}:
+        return MobileViTv2Seg(base=16)
+    if key in {"mambahome", "mamba_home", "home"}:
+        return MambaHoMESeg(base=16)
+    if key in {"litemamba_bound", "litemambabound", "litemamba-bound"}:
+        return LiteMambaBoundSeg(base=16)
     if key == "blmnet":
         return BLMNet(base=16, use_scan=True, use_boundary=True)
     if key == "blmnet_no_boundary":
