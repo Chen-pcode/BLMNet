@@ -10,7 +10,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-root", type=str, default="./data")
     parser.add_argument("--output-root", type=str, default="./outputs")
-    parser.add_argument("--suite", choices=["quick", "full", "ablation", "cross", "extra"], default="quick")
+    parser.add_argument("--suite", choices=["quick", "full", "ablation", "cross", "extra", "paper_align"], default="quick")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--img-size", type=int, default=256)
@@ -24,6 +24,7 @@ def parse_args() -> argparse.Namespace:
 def experiments(suite: str) -> list[tuple[str, str, list[str], str]]:
     baselines = ["malunet", "lbunet", "unext", "egeunet"]
     extra_baselines = ["unet", "mobilevitv2", "mambahome", "litemamba_bound"]
+    paper_align_baselines = ["classic_unet", "mobilevitv2_paper"]
     proposed = ["blmnet"]
     ablations = ["blmnet_no_boundary", "blmnet_no_scan"]
     if suite == "quick":
@@ -47,6 +48,13 @@ def experiments(suite: str) -> list[tuple[str, str, list[str], str]]:
         for train in ["isic2018", "isic2017"]:
             tests = ["isic2017", "PH2"] if train == "isic2018" else ["isic2018", "PH2"]
             for model in extra_baselines:
+                rows.append((train, train, tests, model))
+        return rows
+    if suite == "paper_align":
+        rows = []
+        for train in ["isic2018", "isic2017"]:
+            tests = ["isic2017", "PH2"] if train == "isic2018" else ["isic2018", "PH2"]
+            for model in paper_align_baselines:
                 rows.append((train, train, tests, model))
         return rows
     raise ValueError(suite)

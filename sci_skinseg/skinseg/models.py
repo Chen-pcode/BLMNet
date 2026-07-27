@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 from torch import nn
@@ -72,6 +73,24 @@ class DoubleConv(nn.Module):
         return self.net(x)
 
 
+class ClassicDoubleConv(nn.Module):
+    """Conv-BN-ReLU block used for the EGE/MALUNet-style U-Net baseline."""
+
+    def __init__(self, in_ch: int, out_ch: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, 3, padding=1, bias=False),
+            nn.BatchNorm2d(out_ch),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_ch, out_ch, 3, padding=1, bias=False),
+            nn.BatchNorm2d(out_ch),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
 class UNet(nn.Module):
     def __init__(self, base: int = 32):
         super().__init__()
@@ -84,6 +103,35 @@ class UNet(nn.Module):
         self.d3 = DoubleConv(base * 8 + base * 4, base * 4)
         self.d2 = DoubleConv(base * 4 + base * 2, base * 2)
         self.d1 = DoubleConv(base * 2 + base, base)
+        self.out = nn.Conv2d(base, 1, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        e1 = self.e1(x)
+        e2 = self.e2(F.max_pool2d(e1, 2))
+        e3 = self.e3(F.max_pool2d(e2, 2))
+        e4 = self.e4(F.max_pool2d(e3, 2))
+        b = self.b(F.max_pool2d(e4, 2))
+        d4 = self.d4(torch.cat([F.interpolate(b, scale_factor=2, mode="bilinear", align_corners=False), e4], 1))
+        d3 = self.d3(torch.cat([F.interpolate(d4, scale_factor=2, mode="bilinear", align_corners=False), e3], 1))
+        d2 = self.d2(torch.cat([F.interpolate(d3, scale_factor=2, mode="bilinear", align_corners=False), e2], 1))
+        d1 = self.d1(torch.cat([F.interpolate(d2, scale_factor=2, mode="bilinear", align_corners=False), e1], 1))
+        return self.out(d1)
+
+
+class ClassicUNet(nn.Module):
+    """Classic U-Net baseline with Conv-BN-ReLU blocks and about 7.77M params."""
+
+    def __init__(self, base: int = 32):
+        super().__init__()
+        self.e1 = ClassicDoubleConv(3, base)
+        self.e2 = ClassicDoubleConv(base, base * 2)
+        self.e3 = ClassicDoubleConv(base * 2, base * 4)
+        self.e4 = ClassicDoubleConv(base * 4, base * 8)
+        self.b = ClassicDoubleConv(base * 8, base * 16)
+        self.d4 = ClassicDoubleConv(base * 16 + base * 8, base * 8)
+        self.d3 = ClassicDoubleConv(base * 8 + base * 4, base * 4)
+        self.d2 = ClassicDoubleConv(base * 4 + base * 2, base * 2)
+        self.d1 = ClassicDoubleConv(base * 2 + base, base)
         self.out = nn.Conv2d(base, 1, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -400,6 +448,82 @@ class MobileViTv2Seg(nn.Module):
         return self.out(d1)
 
 
+class OfficialMobileViTv2Seg(nn.Module):
+    """Apple ml-cvnets MobileViTv2 backbone with a lightweight binary decoder."""
+
+    def __init__(self, width_multiplier: float = 0.5, decoder_ch: int = 96):
+        super().__init__()
+        root = _repo_root() / "MobileViTv2" / "ml-cvnets-main"
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        try:
+            from cvnets.models.classification.mobilevit_v2 import MobileViTv2
+        except Exception as exc:  # pragma: no cover - depends on optional external repo.
+            raise ImportError(
+                "Cannot import official MobileViTv2 from MobileViTv2/ml-cvnets-main. "
+                "Keep that folder at the repository root on Kaggle."
+            ) from exc
+
+        opts = SimpleNamespace()
+        option_values = {
+            "common.enable_coreml_compatible_module": False,
+            "dev.device": "cuda",
+            "model.activation.name": "swish",
+            "model.activation.inplace": False,
+            "model.activation.neg_slope": 0.1,
+            "model.classification.activation.inplace": False,
+            "model.classification.activation.name": None,
+            "model.classification.activation.neg_slope": 0.1,
+            "model.classification.enable_layer_wise_lr_decay": False,
+            "model.classification.gradient_checkpointing": False,
+            "model.classification.layer_wise_lr_decay_rate": 1.0,
+            "model.classification.mitv2.attn_dropout": 0.0,
+            "model.classification.mitv2.attn_norm_layer": "layer_norm_2d",
+            "model.classification.mitv2.dropout": 0.0,
+            "model.classification.mitv2.ffn_dropout": 0.0,
+            "model.classification.mitv2.width_multiplier": width_multiplier,
+            "model.classification.n_classes": 1000,
+            "model.layer.global_pool": "mean",
+            "model.layer.linear_init": "normal",
+            "model.normalization.groups": 1,
+            "model.normalization.momentum": 0.1,
+            "model.normalization.name": "batch_norm",
+            "scheduler.is_iteration_based": True,
+            "scheduler.max_iterations": 100000,
+            "scheduler.warmup_iterations": 10000,
+        }
+        for key, value in option_values.items():
+            setattr(opts, key, value)
+
+        self.backbone = MobileViTv2(opts=opts)
+        conf = self.backbone.model_conf_dict
+        c1 = conf["layer1"]["out"]
+        c2 = conf["layer2"]["out"]
+        c3 = conf["layer3"]["out"]
+        c4 = conf["layer4"]["out"]
+        c5 = conf["layer5"]["out"]
+        self.p5 = ConvBNAct(c5, decoder_ch, 1, 1, 0)
+        self.p4 = ConvBNAct(c4, decoder_ch, 1, 1, 0)
+        self.p3 = ConvBNAct(c3, decoder_ch, 1, 1, 0)
+        self.p2 = ConvBNAct(c2, decoder_ch // 2, 1, 1, 0)
+        self.p1 = ConvBNAct(c1, decoder_ch // 2, 1, 1, 0)
+        self.f4 = ResDSBlock(decoder_ch * 2, decoder_ch)
+        self.f3 = ResDSBlock(decoder_ch * 2, decoder_ch)
+        self.f2 = ResDSBlock(decoder_ch + decoder_ch // 2, decoder_ch // 2)
+        self.f1 = ResDSBlock(decoder_ch, decoder_ch // 2)
+        self.out = nn.Conv2d(decoder_ch // 2, 1, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        size = x.shape[-2:]
+        feats = self.backbone.extract_end_points_all(x, use_l5=True, use_l5_exp=False)
+        l1, l2, l3, l4, l5 = feats["out_l1"], feats["out_l2"], feats["out_l3"], feats["out_l4"], feats["out_l5"]
+        d4 = self.f4(torch.cat([F.interpolate(self.p5(l5), size=l4.shape[-2:], mode="bilinear", align_corners=False), self.p4(l4)], 1))
+        d3 = self.f3(torch.cat([F.interpolate(d4, size=l3.shape[-2:], mode="bilinear", align_corners=False), self.p3(l3)], 1))
+        d2 = self.f2(torch.cat([F.interpolate(d3, size=l2.shape[-2:], mode="bilinear", align_corners=False), self.p2(l2)], 1))
+        d1 = self.f1(torch.cat([F.interpolate(d2, size=l1.shape[-2:], mode="bilinear", align_corners=False), self.p1(l1)], 1))
+        return F.interpolate(self.out(d1), size=size, mode="bilinear", align_corners=False)
+
+
 class SoftExpertContext(nn.Module):
     """Mamba Goes HoME-inspired lightweight mixture-of-experts context block."""
 
@@ -537,11 +661,12 @@ def _external_model(name: str) -> nn.Module:
         return ProbabilityOutputWrapper(cls(num_classes=1, input_channels=3, bridge=True, gt_ds=True))
     raise ValueError(name)
 
-
 def get_model(name: str) -> nn.Module:
     key = name.lower()
     if key == "unet":
         return UNet(base=32)
+    if key in {"classic_unet", "classic-unet", "unet_classic"}:
+        return ClassicUNet(base=32)
     if key == "tinyunet":
         return TinyUNet(base=16)
     if key in {"egelite", "ege"}:
@@ -552,6 +677,8 @@ def get_model(name: str) -> nn.Module:
         return UNeXtLite(base=16)
     if key in {"mobilevitv2", "mobilevit-v2", "mobilevit"}:
         return MobileViTv2Seg(base=16)
+    if key in {"mobilevitv2_paper", "mobilevitv2-paper", "mobilevitv2_187m"}:
+        return OfficialMobileViTv2Seg(width_multiplier=0.5, decoder_ch=96)
     if key in {"mambahome", "mamba_home", "home"}:
         return MambaHoMESeg(base=16)
     if key in {"litemamba_bound", "litemambabound", "litemamba-bound"}:

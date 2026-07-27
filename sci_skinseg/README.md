@@ -15,6 +15,7 @@ The code supports:
 - cross-domain evaluation on ISIC2017, ISIC2018, and PH2
 - lightweight baselines (`malunet`, `lbunet`, `unext`, `egeunet`) and the proposed `blmnet`
 - extra comparison baselines (`unet`, `mobilevitv2`, `mambahome`, `litemamba_bound`)
+- paper-aligned baselines (`classic_unet`, `mobilevitv2_paper`)
 - ablations for boundary branch and selective-scan block
 - Dice, foreground IoU, mIoU, Accuracy, sensitivity, specificity, precision, F1, HD95
 - parameters, approximate FLOPs, model size, and FPS
@@ -94,6 +95,8 @@ CUDA extensions:
 
 - `unet`: standard U-Net reference baseline
 - `mobilevitv2`: MobileViTv2-style lightweight CNN/attention segmentation model
+- `classic_unet`: classic Conv-BN-ReLU U-Net baseline, provided because the original U-Net release is Caffe/Matlab and cannot be trained directly by this PyTorch framework
+- `mobilevitv2_paper`: Apple ml-cvnets MobileViTv2 backbone with a lightweight binary decoder, intended to better match the MobileViTv2 baseline scale reported by EGE-UNet-style papers
 - `mambahome`: 2D Mamba Goes HoME-style mixture-of-experts context baseline
 - `litemamba_bound`: LiteMamba-Bound-style boundary-aware lightweight baseline
 
@@ -155,3 +158,44 @@ other extra comparisons. Zip the results before downloading:
 python summarize_results.py --root /kaggle/working/outputs_extra
 zip -r /kaggle/working/outputs_extra.zip /kaggle/working/outputs_extra
 ```
+
+## Paper-Aligned U-Net and MobileViTv2 Checks
+
+Run these two baselines to verify whether the previous `unet` and
+`mobilevitv2` style implementations were too different from the papers:
+
+```bash
+python run_suite.py \
+  --data-root /kaggle/input/datasets/zichengdoctor \
+  --output-root /kaggle/working/outputs_paper_align \
+  --suite paper_align \
+  --epochs 300 \
+  --batch-size 8 \
+  --img-size 256 \
+  --seeds 2026 \
+  --amp \
+  --save-preds
+```
+
+If Kaggle time is limited, run one model at a time:
+
+```bash
+python run_experiment.py \
+  --data-root /kaggle/input/datasets/zichengdoctor \
+  --train-dataset isic2018 \
+  --val-dataset isic2018 \
+  --test-datasets isic2017 PH2 \
+  --model classic_unet \
+  --output-dir /kaggle/working/outputs_paper_align/classic_unet_isic2018 \
+  --epochs 300 \
+  --batch-size 8 \
+  --img-size 256 \
+  --seed 2026 \
+  --amp \
+  --color-jitter \
+  --save-preds
+```
+
+Then replace `classic_unet` with `mobilevitv2_paper`. Keep the repository root
+layout unchanged because `mobilevitv2_paper` imports the official backbone from
+`MobileViTv2/ml-cvnets-main`.
