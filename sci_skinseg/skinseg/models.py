@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from argparse import Namespace
 from pathlib import Path
-from types import SimpleNamespace
 
 import torch
 from torch import nn
@@ -464,7 +464,7 @@ class OfficialMobileViTv2Seg(nn.Module):
                 "Keep that folder at the repository root on Kaggle."
             ) from exc
 
-        opts = SimpleNamespace()
+        opts = Namespace()
         option_values = {
             "common.enable_coreml_compatible_module": False,
             "dev.device": "cuda",
