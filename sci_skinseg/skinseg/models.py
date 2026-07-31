@@ -188,14 +188,14 @@ class GroupEnhanceBlock(nn.Module):
 
 
 class MultiScaleContextBlock(nn.Module):
-    def __init__(self, channels: int):
+    def __init__(self, channels: int, scan_directions: int = 4):
         super().__init__()
         branch_ch = channels // 4
         self.reduce = ConvBNAct(channels, branch_ch * 4, 1, 1, 0)
         self.b1 = DSConv(branch_ch, branch_ch, dilation=1)
         self.b2 = DSConv(branch_ch, branch_ch, dilation=2)
         self.b3 = DSConv(branch_ch, branch_ch, dilation=4)
-        self.b4 = SelectiveScan2D(branch_ch)
+        self.b4 = SelectiveScan2D(branch_ch, directions=scan_directions)
         self.fuse = ConvBNAct(branch_ch * 4, channels, 1, 1, 0)
         self.attn = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
@@ -240,21 +240,25 @@ class EGELite(nn.Module):
 class SelectiveScan2D(nn.Module):
     """Mamba-style lightweight selective scan without custom CUDA dependencies."""
 
-    def __init__(self, channels: int):
+    def __init__(self, channels: int, directions: int = 4):
         super().__init__()
+        if directions not in {2, 4}:
+            raise ValueError(f"directions must be 2 or 4, got {directions}")
+        self.directions = directions
         self.in_proj = ConvBNAct(channels, channels * 2, 1, 1, 0)
         self.local = DSConv(channels, channels)
         self.gate = nn.Sequential(nn.Conv2d(channels, channels, 1), nn.Sigmoid())
         self.out_proj = ConvBNAct(channels, channels, 1, 1, 0)
 
-    @staticmethod
-    def _scan(x: torch.Tensor) -> torch.Tensor:
+    def _scan(self, x: torch.Tensor) -> torch.Tensor:
         h_f = torch.cumsum(x, dim=2)
-        h_b = torch.flip(torch.cumsum(torch.flip(x, dims=[2]), dim=2), dims=[2])
         w_f = torch.cumsum(x, dim=3)
-        w_b = torch.flip(torch.cumsum(torch.flip(x, dims=[3]), dim=3), dims=[3])
         h = x.shape[2]
         w = x.shape[3]
+        if self.directions == 2:
+            return h_f / max(h, 1) + w_f / max(w, 1)
+        h_b = torch.flip(torch.cumsum(torch.flip(x, dims=[2]), dim=2), dims=[2])
+        w_b = torch.flip(torch.cumsum(torch.flip(x, dims=[3]), dim=3), dims=[3])
         return (h_f + h_b) / max(h, 1) + (w_f + w_b) / max(w, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -266,37 +270,57 @@ class SelectiveScan2D(nn.Module):
 
 
 class BoundaryGuidedFusion(nn.Module):
-    def __init__(self, high_ch: int, low_ch: int, out_ch: int):
+    def __init__(self, high_ch: int, low_ch: int, out_ch: int, use_feedback: bool = True):
         super().__init__()
+        self.use_feedback = use_feedback
         self.high = ConvBNAct(high_ch, out_ch, 1, 1, 0)
         self.low = ConvBNAct(low_ch, out_ch, 1, 1, 0)
         self.boundary = nn.Conv2d(out_ch, 1, 1)
-        self.mix = ResDSBlock(out_ch * 2 + 1, out_ch)
+        mix_ch = out_ch * 2 + (1 if use_feedback else 0)
+        self.mix = ResDSBlock(mix_ch, out_ch)
 
     def forward(self, high: torch.Tensor, low: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         high = F.interpolate(self.high(high), size=low.shape[-2:], mode="bilinear", align_corners=False)
         low = self.low(low)
         b = self.boundary(high + low)
-        fused = self.mix(torch.cat([high, low, torch.sigmoid(b)], dim=1))
+        if self.use_feedback:
+            fusion_input = torch.cat([high, low, torch.sigmoid(b)], dim=1)
+        else:
+            fusion_input = torch.cat([high, low], dim=1)
+        fused = self.mix(fusion_input)
         return fused, b
 
 
 class BLMNet(nn.Module):
     """Boundary-aware Lightweight Mamba-CNN network."""
 
-    def __init__(self, base: int = 16, use_scan: bool = True, use_boundary: bool = True):
+    def __init__(
+        self,
+        base: int = 16,
+        use_scan: bool = True,
+        use_boundary: bool = True,
+        use_boundary_loss: bool = True,
+        use_boundary_feedback: bool = True,
+        use_group_enhance: bool = True,
+        scan_directions: int = 4,
+    ):
         super().__init__()
         self.use_boundary = use_boundary
+        self.use_boundary_loss = use_boundary_loss
         self.stem = ConvBNAct(3, base)
         self.e1 = ResDSBlock(base, base)
-        self.e2 = nn.Sequential(ResDSBlock(base, base * 2, 2), GroupEnhanceBlock(base * 2))
-        self.e3 = nn.Sequential(ResDSBlock(base * 2, base * 4, 2), GroupEnhanceBlock(base * 4))
-        self.e4 = nn.Sequential(ResDSBlock(base * 4, base * 8, 2), GroupEnhanceBlock(base * 8))
-        self.context = MultiScaleContextBlock(base * 8) if use_scan else GroupEnhanceBlock(base * 8)
+        enhance2 = GroupEnhanceBlock(base * 2) if use_group_enhance else nn.Identity()
+        enhance3 = GroupEnhanceBlock(base * 4) if use_group_enhance else nn.Identity()
+        enhance4 = GroupEnhanceBlock(base * 8) if use_group_enhance else nn.Identity()
+        self.e2 = nn.Sequential(ResDSBlock(base, base * 2, 2), enhance2)
+        self.e3 = nn.Sequential(ResDSBlock(base * 2, base * 4, 2), enhance3)
+        self.e4 = nn.Sequential(ResDSBlock(base * 4, base * 8, 2), enhance4)
+        fallback_context = GroupEnhanceBlock(base * 8) if use_group_enhance else nn.Identity()
+        self.context = MultiScaleContextBlock(base * 8, scan_directions=scan_directions) if use_scan else fallback_context
         if use_boundary:
-            self.f3 = BoundaryGuidedFusion(base * 8, base * 4, base * 4)
-            self.f2 = BoundaryGuidedFusion(base * 4, base * 2, base * 2)
-            self.f1 = BoundaryGuidedFusion(base * 2, base, base)
+            self.f3 = BoundaryGuidedFusion(base * 8, base * 4, base * 4, use_feedback=use_boundary_feedback)
+            self.f2 = BoundaryGuidedFusion(base * 4, base * 2, base * 2, use_feedback=use_boundary_feedback)
+            self.f1 = BoundaryGuidedFusion(base * 2, base, base, use_feedback=use_boundary_feedback)
         else:
             self.f3 = ResDSBlock(base * 12, base * 4)
             self.f2 = ResDSBlock(base * 6, base * 2)
@@ -321,6 +345,7 @@ class BLMNet(nn.Module):
             return {
                 "logits": logits,
                 "boundary": boundary / 3.0,
+                "boundary_loss_weight": 0.4 if self.use_boundary_loss else 0.0,
                 "aux": [
                     F.interpolate(self.aux3(d3), size=logits.shape[-2:], mode="bilinear", align_corners=False),
                     F.interpolate(self.aux2(d2), size=logits.shape[-2:], mode="bilinear", align_corners=False),
@@ -689,6 +714,14 @@ def get_model(name: str) -> nn.Module:
         return BLMNet(base=16, use_scan=True, use_boundary=False)
     if key == "blmnet_no_scan":
         return BLMNet(base=16, use_scan=False, use_boundary=True)
+    if key == "blmnet_no_boundary_loss":
+        return BLMNet(base=16, use_scan=True, use_boundary=True, use_boundary_loss=False)
+    if key == "blmnet_no_boundary_feedback":
+        return BLMNet(base=16, use_scan=True, use_boundary=True, use_boundary_feedback=False)
+    if key == "blmnet_no_group_enhance":
+        return BLMNet(base=16, use_scan=True, use_boundary=True, use_group_enhance=False)
+    if key in {"blmnet_scan2", "blmnet_2dir_scan", "blmnet_scan_2dir"}:
+        return BLMNet(base=16, use_scan=True, use_boundary=True, scan_directions=2)
     raise ValueError(f"Unknown model: {name}")
 
 
